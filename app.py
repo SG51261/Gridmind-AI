@@ -1,0 +1,113 @@
+import streamlit as st
+import pandas as pd
+import random
+import requests # Added for API calls
+
+st.set_page_config(page_title="GridMind AI", layout="wide")
+
+# --- STYLING ---
+st.markdown("""
+    <style>
+    .stApp { background-color: #0E1117; color: white; }
+    div[data-testid="stMetricValue"] { color: white !important; }
+    .stButton>button { 
+        width: 100%; background-color: #00BFFF !important; color: black !important; 
+        font-weight: bold !important; border-radius: 8px !important; text-transform: uppercase;
+    }
+    .card { 
+        background-color: #1C1F26; border: 1px solid #2D323B; border-radius: 12px; 
+        padding: 10px; margin-bottom: 10px; color: white; 
+    }
+    .badge { padding: 2px 6px; border-radius: 4px; font-size: 0.6rem; font-weight: bold; float: right; }
+    .b-Critical { background: #FF4B4B; } .b-High { background: #FFA500; }
+    .b-Medium { background: #FFD700; color: black; } .b-Low { background: #4CAF50; }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- API INTEGRATION LOGIC ---
+def fetch_live_grid_data():
+    """Fetches simulated live energy data from a public API"""
+    try:
+        # Using a public random-data API to simulate real-time grid fluctuations
+        response = requests.get("https://api.coindesk.com/v1/bpi/currentprice.json", timeout=3)
+        if response.status_code == 200:
+            # We use the price value as a 'random seed' to simulate grid load fluctuation
+            val = response.json()['bpi']['USD']['rate_float']
+            return int(val % 500) + 700 # Scales the value to be between 700 and 1200 MW
+    except:
+        return 1200 # Fallback to default
+    return 1200
+
+# --- CORE LOGIC ---
+DEFAULT_CAPACITY = 1200
+WEIGHTS = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+
+if "areas" not in st.session_state: st.session_state.areas = []
+if "res" not in st.session_state: st.session_state.res = None
+
+def load_data(lvl):
+    base = [("Hospital", "Critical", 100), ("Nuclear", "Critical", 80), ("DataCenter", "Critical", 200),
+            ("GovOffice", "High", 150), ("Industry", "High", 250), ("CityCenter", "Medium", 200),
+            ("ResNorth", "Low", 150), ("ResSouth", "Low", 150)]
+    m = {"Easy": 0.7, "Medium": 1.0, "Hard": 1.5}[lvl]
+    st.session_state.areas = [{"name": n, "priority": p, "usage": int(u*m)} for n, p, u in base]
+
+def balance(current_capacity):
+    for a in st.session_state.areas: a['pred'] = a['usage'] * random.uniform(0.9, 1.3)
+    sorted_a = sorted(st.session_state.areas, key=lambda x: WEIGHTS[x['priority']], reverse=True)
+    rem, final = current_capacity, []
+    for a in sorted_a:
+        alloc = min(a['pred'], rem)
+        rem -= alloc
+        stat = "Normal" if alloc >= a['pred']*0.98 else ("Reduce" if alloc > 0 else "Cut")
+        final.append({**a, "alloc": alloc, "status": stat})
+    st.session_state.res = final
+
+# --- UI ---
+st.markdown("<h1 style='text-align:center; color:#00BFFF;'>⚡ GRIDMIND AI <small style='font-size:1rem; color:gray;'>+ LIVE API</small></h1>", unsafe_allow_html=True)
+
+# API Mode Toggle
+use_api = st.checkbox("🌐 Connect to Live Grid API", value=False)
+current_capacity = fetch_live_grid_data() if use_api else DEFAULT_CAPACITY
+
+c1, c2, c3 = st.columns(3)
+with c1:
+    if st.button("➕ Add Area"):
+        with st.popover("Details"):
+            name = st.text_input("Name")
+            pri = st.selectbox("Priority", list(WEIGHTS.keys()))
+            use = st.number_input("MW", 10, 1000, 100)
+            if st.button("Save"):
+                st.session_state.areas.append({"name": name, "priority": pri, "usage": use})
+                st.rerun()
+with c2:
+    lvl = st.selectbox("Scenario", ["Easy", "Medium", "Hard"])
+    if st.button("📥 Load Scenario"):
+        load_data(lvl)
+        st.rerun()
+with c3:
+    if st.button("🤖 AI Balance Grid"):
+        balance(current_capacity)
+
+# Metrics
+load = sum(a['usage'] for a in st.session_state.areas)
+util = (load/current_capacity)*100 if current_capacity > 0 else 0
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Capacity", f"{current_capacity} MW", delta="Live" if use_api else None)
+m2.metric("Load", f"{load:.1f} MW")
+m3.metric("Util", f"{util:.1f}%")
+m4.metric("Status", "NORMAL" if util < 90 else "OVERLOAD")
+
+# Areas Grid
+st.subheader("Managed Areas")
+cols = st.columns(4)
+for i, a in enumerate(st.session_state.areas):
+    with cols[i % 4]:
+        st.markdown(f'<div class="card"><span class="badge b-{a["priority"]}">{a["priority"]}</span><b>{a["name"]}</b><br><span style="color:gray">Usage:</span> <span style="color:#00BFFF">{a["usage"]} MW</span></div>', unsafe_allow_html=True)
+
+if st.session_state.res:
+    st.divider()
+    df = pd.DataFrame(st.session_state.res)
+    st.table(df[['name', 'priority', 'pred', 'alloc', 'status']])
+    st.subheader("Predicted vs Allocated Load")
+    st.bar_chart(df.set_index('name')[['pred', 'alloc']])
